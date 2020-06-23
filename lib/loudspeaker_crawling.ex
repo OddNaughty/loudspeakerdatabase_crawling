@@ -2,16 +2,17 @@ import Meeseeks.XPath
 import Meeseeks.CSS
 alias NimbleCSV.RFC4180, as: CSV
 
-
 defmodule LoudspeakerCrawling do
 
   @base_url "http://www.loudspeakerdatabase.com/"
-  @csv_header ~w"brand name impedance size type rms_power qts sensitivity vas freq_range xmax price url"
+  @csv_header ~w"brand name impedance size type rms_power qts sensitivity vas freq_range xmax price url miniature_url_1 miniature_url_2"
 
   def parse_ls_miniature(ls_div) do
+    IO.inspect(ls_div)
     size_type = Meeseeks.one(ls_div, css("[itemprop='description']")) |> Meeseeks.text
     [size | type] = size_type |> String.split()
     type = Enum.join(type, "-")
+    miniature_url = (Meeseeks.one(ls_div, css("img")) |> Meeseeks.attr("src")) || ""
     %{
       "price" => Meeseeks.one(ls_div, css("span.price")) |> Meeseeks.text,
       "brand" => Meeseeks.one(ls_div, css("span[itemprop='brand']")) |> Meeseeks.text,
@@ -29,6 +30,10 @@ defmodule LoudspeakerCrawling do
       "vas" => Meeseeks.one(ls_div, xpath("tr[4]/td[4]/b")) |> Meeseeks.text,
       "freq_range" => Meeseeks.one(ls_div, xpath("tr[5]/td[2]/b")) |> Meeseeks.text,
       "xmax" => Meeseeks.one(ls_div, xpath("tr[5]/td[4]/b")) |> Meeseeks.text,
+      "miniature_url_1" =>
+        URI.merge(@base_url, miniature_url) |> to_string(),
+      "miniature_url_2" =>
+        URI.merge(@base_url, miniature_url) |> to_string() |> String.replace("photo", "photo2")
     }
   end
 
@@ -39,7 +44,7 @@ defmodule LoudspeakerCrawling do
       "fs", "qes", "qms", "qts", "vas", "re", "le", "bl", "rms",
       "cms", "mmd", "mms", "sd", "diameter", "xmax", "vd", "n0", "ebp"
     ]
-    ts_map = Enum.reduce(Enum.with_index(keys, 1), %{}, fn {key, i}, acc ->
+    ts_map = Enum.reduce(Enum.with_index(ts_keys, 1), %{}, fn {key, i}, acc ->
       IO.inspect("Key: #{key}, index: #{i}")
       Map.put(acc, key, Meeseeks.one(ts_params, xpath("tbody/tr[#{i}]/td[3]")) |> Meeseeks.text)
       |> Map.put(key <> "_unit", Meeseeks.one(ts_params, xpath("tbody/tr[#{i}]/td[4]")) |> Meeseeks.text)
@@ -51,7 +56,7 @@ defmodule LoudspeakerCrawling do
       Enum.zip(["size_in", "size_mm", "rms_power", "max_power", "spl", "freq_range", "impedance", "re"], params)
       |> Enum.into(%{})
       |> Map.merge(ts_map)
-    
+    params_map
   end
 
   def stream_to_csv(stream, csv_header \\ @csv_header) do
@@ -107,11 +112,14 @@ defmodule LoudspeakerCrawling do
 
   def csv_from_url(path) do
     LoudspeakerCrawling.get_ls_datas_from_url()
+    |> Stream.flat_map(& &1)
     |> LoudspeakerCrawling.stream_to_csv()
     |> Stream.into(File.stream!(path))
     |> Stream.run()
   end
 
+  @spec complete_data_from_ls_url(binary, any) ::
+          nil | {:error, Meeseeks.Error.t()} | Meeseeks.Result.t()
   def complete_data_from_ls_url(url, model) do
     body = HTTPoison.get!(url).body
     _ls = Meeseeks.one(body, css("div##{model}"))
