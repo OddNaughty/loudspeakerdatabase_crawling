@@ -2,6 +2,8 @@ import Meeseeks.XPath
 import Meeseeks.CSS
 alias NimbleCSV.RFC4180, as: CSV
 
+require Logger
+
 defmodule LoudspeakerCrawling do
   @base_url "http://www.loudspeakerdatabase.com/"
   @csv_header ~w"brand name impedance size type rms_power qts sensitivity vas freq_range xmax price url miniature_url_1 miniature_url_2"
@@ -41,61 +43,6 @@ defmodule LoudspeakerCrawling do
       "miniature_url_2" =>
         URI.merge(@base_url, miniature_url) |> to_string() |> String.replace("photo", "photo2")
     }
-  end
-
-  def parse_ls_product(product_div) do
-    # TODO: It's a table, with a lot of incrementals, we can find a way to do this more clearly
-    ts_params = Meeseeks.one(product_div, css("div.ts_param"))
-
-    ts_keys = [
-      "fs",
-      "qes",
-      "qms",
-      "qts",
-      "vas",
-      "re",
-      "le",
-      "bl",
-      "rms",
-      "cms",
-      "mmd",
-      "mms",
-      "sd",
-      "diameter",
-      "xmax",
-      "vd",
-      "n0",
-      "ebp"
-    ]
-
-    ts_map =
-      Enum.reduce(Enum.with_index(ts_keys, 1), %{}, fn {key, i}, acc ->
-        IO.inspect("Key: #{key}, index: #{i}")
-
-        Map.put(
-          acc,
-          key,
-          Meeseeks.one(ts_params, xpath("tbody/tr[#{i}]/td[3]")) |> Meeseeks.text()
-        )
-        |> Map.put(
-          key <> "_unit",
-          Meeseeks.one(ts_params, xpath("tbody/tr[#{i}]/td[4]")) |> Meeseeks.text()
-        )
-      end)
-
-    params =
-      Meeseeks.one(product_div, css("div.summary"))
-      |> Meeseeks.all(css("div.ui"))
-
-    params_map =
-      Enum.zip(
-        ["size_in", "size_mm", "rms_power", "max_power", "spl", "freq_range", "impedance", "re"],
-        params
-      )
-      |> Enum.into(%{})
-      |> Map.merge(ts_map)
-
-    params_map
   end
 
   def stream_to_csv(stream, csv_header \\ @csv_header) do
@@ -164,11 +111,43 @@ defmodule LoudspeakerCrawling do
     end)
   end
 
-  def csv_from_url(path) do
-    LoudspeakerCrawling.get_ls_datas_from_url()
+  def extract_ts_from_ts_param_div(%Meeseeks.Result{} = _ts_param_div) do
+    # TODO: extract here
+  end
+
+  def get_ts_param_div_from_product_urls(urls) do
+    Stream.map(urls, fn url ->
+      page = URI.merge(@base_url, url)
+      Logger.debug("Getting product page #{page}")
+      body = HTTPoison.get!(page).body
+      Meeseeks.one(body, css("div.ts_param"))
+    end)
+  end
+
+  def get_loudspeaker_urls() do
+    Stream.map(1..100, fn page ->
+      Logger.debug("Getting product page #{page}")
+      body = HTTPoison.get!(@base_url, [], params: [page: page]).body
+      ls_selector = css("html body div.results div.ui [itemprop=\"url\"]")
+
+      _urls =
+        body
+        |> Meeseeks.all(ls_selector)
+        |> Enum.map(&Meeseeks.attr(&1, "href"))
+    end)
+  end
+
+  def csv_from_url(_path) do
+    LoudspeakerCrawling.get_loudspeaker_urls()
     |> Stream.flat_map(& &1)
-    |> LoudspeakerCrawling.stream_to_csv()
-    |> Stream.into(File.stream!(path))
+    |> LoudspeakerCrawling.get_ts_param_div_from_product_urls()
+    |> LoudspeakerCrawling.extract_ts_from_ts_param_div()
+    # Here, I say to the stream to take only one element, for testing purpose
+    |> Stream.take(1)
     |> Stream.run()
+
+    # |> LoudspeakerCrawling.stream_to_csv()
+    # |> Stream.into(File.stream!(path))
+    # |> Stream.run()
   end
 end
